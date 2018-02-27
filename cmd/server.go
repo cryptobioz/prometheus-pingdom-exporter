@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -34,12 +35,12 @@ var (
 	pingdomCheckStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "pingdom_check_status",
 		Help: "The current status of the check (0: up, 1: unconfirmed_down, 2: down, -1: paused, -2: unknown)",
-	}, []string{"id", "name", "hostname", "resolution", "paused"})
+	}, []string{"id", "name", "hostname", "target", "resolution", "paused"})
 
 	pingdomCheckResponseTime = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "pingdom_check_response_time",
 		Help: "The response time of last test in milliseconds",
-	}, []string{"id", "name", "hostname", "resolution", "paused"})
+	}, []string{"id", "name", "hostname", "target", "resolution", "paused"})
 )
 
 func init() {
@@ -111,10 +112,34 @@ func serverRun(cmd *cobra.Command, args []string) {
 					paused = "true"
 				}
 
+				details, err := client.Checks.Read(check.ID)
+				if err != nil {
+					log.Println("Error reading check", err)
+					continue
+				}
+
+				var target string
+				if details.Type.Name == "http" {
+					protocol := "http"
+					if details.Type.HTTP.Encryption {
+						protocol = "https"
+					}
+					u, err := url.Parse(fmt.Sprintf("%s://%s%s", protocol, details.Hostname, details.Type.HTTP.Url))
+					if err != nil {
+						log.Println("Error parsing url", err)
+					}
+					u.RawQuery = u.Query().Encode()
+					target = u.String()
+
+				} else {
+					target = details.Hostname
+				}
+
 				pingdomCheckStatus.WithLabelValues(
 					id,
 					check.Name,
 					check.Hostname,
+					target,
 					resolution,
 					paused,
 				).Set(status)
@@ -123,6 +148,7 @@ func serverRun(cmd *cobra.Command, args []string) {
 					id,
 					check.Name,
 					check.Hostname,
+					target,
 					resolution,
 					paused,
 				).Set(float64(check.LastResponseTime))
